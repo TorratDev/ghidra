@@ -398,6 +398,18 @@ impl Analyzer<'_> {
             }
         }
         let mut changed = false;
+        let code_targets: Vec<u64> = self.prog.code_pointers.values().copied().collect();
+        for t in code_targets {
+            if self.prog.memory.is_executable(t)
+                && !self.insns.contains_key(&t)
+                && self.insn_containing(t).is_none()
+                && self.valid_code(t, 2)
+            {
+                self.code_boundaries.insert(t);
+                self.disassemble(t);
+                changed = true;
+            }
+        }
         for t in cands {
             if self.insns.contains_key(&t)
                 || self.insn_containing(t).is_some()
@@ -480,6 +492,14 @@ impl Analyzer<'_> {
                     if rule.constraints.after_defined
                         && off > 0
                         && self.insn_containing(a - 1).is_none()
+                    {
+                        continue;
+                    }
+                    // Rules that only apply at existing functions never
+                    // discover one; `after="data"` needs defined data or no
+                    // memory before the match (ra defines no data yet).
+                    if rule.constraints.existing_function
+                        || (rule.constraints.after_data && off > 0)
                     {
                         continue;
                     }
@@ -1029,6 +1049,29 @@ fn ranges(mut it: impl Iterator<Item = (u64, u64)>) -> Vec<(u64, u64)> {
     out
 }
 
+/// One demangled name per address (see `report`).
+fn demangle_symbols(
+    prog: &Program,
+    kind: ra_demangle::ProgramKind,
+) -> BTreeMap<u64, ra_demangle::Demangled> {
+    let mut by_addr: BTreeMap<u64, Vec<&ra_loader::LoadedSymbol>> = BTreeMap::new();
+    for s in &prog.symbols {
+        by_addr.entry(s.addr).or_default().push(s);
+    }
+    let mut out = BTreeMap::new();
+    for (addr, mut syms) in by_addr {
+        // Primary first: function symbols, then unversioned names.
+        syms.sort_by_key(|s| (!s.is_function, s.name.contains('@')));
+        if let Some(d) = syms
+            .iter()
+            .find_map(|s| ra_demangle::demangle_symbol(&s.name, kind))
+        {
+            out.insert(addr, d);
+        }
+    }
+    out
+}
+
 /// Ghidra default label: prefix plus the address zero-padded to 8 digits.
 fn ghidra_default_name(prefix: &str, addr: u64) -> String {
     format!("{prefix}_{addr:08x}")
@@ -1063,6 +1106,15 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
         })
         .collect();
 
+    // Demangler analyzers (AbstractDemanglerAnalyzer): one demangled name
+    // per address, from the primary symbol or else the first alternate that
+    // demangles; it becomes the primary name, the mangled one stays a label.
+    let kind = ra_demangle::ProgramKind {
+        windows: prog.format == "PE",
+        rust: prog.is_rust,
+    };
+    let demangled = demangle_symbols(prog, kind);
+
     let mut named: HashSet<u64> = HashSet::new();
     for s in &prog.symbols {
         let kind = if analysis.functions.contains_key(&s.addr) {
@@ -1076,14 +1128,37 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
         r.symbols.push(SymbolInfo {
             addr: s.addr,
             name: s.name.clone(),
+            namespace: None,
             kind: kind.into(),
             source: s.source,
         });
     }
+    for (&addr, d) in &demangled {
+        let kind = if analysis.functions.contains_key(&addr) {
+            "function"
+        } else if prog.symbols.iter().any(|s| s.addr == addr && s.is_data) {
+            "data"
+        } else {
+            "label"
+        };
+        r.symbols.push(SymbolInfo {
+            addr,
+            name: d.name.clone(),
+            namespace: d.namespace_string(),
+            kind: kind.into(),
+            source: SymbolSource::Analysis,
+        });
+    }
+    let import_names: std::collections::HashMap<&str, ra_demangle::Demangled> = prog
+        .imports
+        .iter()
+        .filter_map(|i| ra_demangle::demangle_symbol(&i.name, kind).map(|d| (i.name.as_str(), d)))
+        .collect();
 
     for f in analysis.functions.values() {
-        // Name priority: function symbol, loader fallback name (`entry`,
-        // `_INIT_0`, `_DT_INIT`), other label, thunked import, `FUN_`.
+        // Name priority: demangled name, function symbol, loader fallback
+        // name (`entry`, `_INIT_0`, `_DT_INIT`), other label, thunked
+        // import, `FUN_`.
         let at: Vec<&ra_loader::LoadedSymbol> =
             prog.symbols.iter().filter(|s| s.addr == f.entry).collect();
         let sym_name = at
@@ -1096,15 +1171,24 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
                     .find(|s| !s.name.starts_with("__DT_"))
                     .map(|s| s.name.clone())
             });
-        let (name, source) = match (&sym_name, &f.thunk) {
-            (Some(n), _) => (n.clone(), SymbolSource::Imported),
-            (None, Some(ThunkTarget::External(n))) => (n.clone(), SymbolSource::Default),
-            (None, _) => (ghidra_default_name("FUN", f.entry), SymbolSource::Default),
+        let (name, namespace, source) = match (demangled.get(&f.entry), &sym_name, &f.thunk) {
+            (Some(d), _, _) => (d.name.clone(), d.namespace_string(), SymbolSource::Analysis),
+            (None, Some(n), _) => (n.clone(), None, SymbolSource::Imported),
+            (None, None, Some(ThunkTarget::External(n))) => match import_names.get(n.as_str()) {
+                Some(d) => (d.name.clone(), d.namespace_string(), SymbolSource::Default),
+                None => (n.clone(), None, SymbolSource::Default),
+            },
+            (None, None, _) => (
+                ghidra_default_name("FUN", f.entry),
+                None,
+                SymbolSource::Default,
+            ),
         };
-        if !at.iter().any(|s| s.name == name) {
+        if !at.iter().any(|s| s.name == name) && !demangled.contains_key(&f.entry) {
             r.symbols.push(SymbolInfo {
                 addr: f.entry,
                 name: name.clone(),
+                namespace: namespace.clone(),
                 kind: "function".into(),
                 source,
             });
@@ -1112,6 +1196,7 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
         r.functions.push(FunctionInfo {
             entry: f.entry,
             name,
+            namespace,
             source,
             thunk: f.thunk.is_some(),
             thunk_target: match f.thunk {
@@ -1126,10 +1211,14 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
     r.imports = prog
         .imports
         .iter()
-        .map(|i| ImportInfo {
-            name: i.name.clone(),
-            library: i.library.clone(),
-            addr: i.slot,
+        .map(|i| {
+            let d = import_names.get(i.name.as_str());
+            ImportInfo {
+                name: d.map(|d| d.name.clone()).unwrap_or_else(|| i.name.clone()),
+                namespace: d.and_then(|d| d.namespace_string()),
+                library: i.library.clone(),
+                addr: i.slot,
+            }
         })
         .collect();
     r.exports = prog
@@ -1140,6 +1229,15 @@ pub fn report(prog: &Program, analysis: &Analysis) -> AnalysisReport {
             name: n.clone(),
         })
         .collect();
+    let exported: HashSet<u64> = prog.exports.iter().map(|(a, _)| *a).collect();
+    for (&addr, d) in &demangled {
+        if exported.contains(&addr) {
+            r.exports.push(ExportInfo {
+                addr,
+                name: d.name.clone(),
+            });
+        }
+    }
 
     // Owning function of each instruction, for tail-call classification: a
     // jump back to the function's own entry is a loop, not a tail call.

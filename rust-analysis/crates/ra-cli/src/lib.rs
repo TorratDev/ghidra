@@ -26,6 +26,69 @@ pub fn analyze_file(
     Ok(report)
 }
 
+/// Name of the pseudo-binary under which demangler agreement is reported
+/// and gated (categories are Ghidra demangler classes).
+pub const DEMANGLE_ORACLE: &str = "demangle-oracle";
+
+/// Compares ra-demangle with Ghidra's demanglers on the oracle written by
+/// `compare/ghidra_demangle.sh` (`expected/demangle/ghidra.json.gz`). For
+/// each Ghidra demangler class, keys are `mangled => namespace::name`;
+/// recall is agreement over the names Ghidra demangled, precision over the
+/// names ra demangled.
+pub fn demangle_comparison(oracle: &Path) -> Result<Comparison> {
+    #[derive(serde::Deserialize)]
+    struct Oracle {
+        producer: String,
+        results: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        mangled: String,
+        demanglers: Vec<R>,
+    }
+    #[derive(serde::Deserialize)]
+    struct R {
+        demangler: String,
+        name: String,
+        namespace: Option<String>,
+    }
+    let raw = std::fs::read(oracle).with_context(|| format!("reading {}", oracle.display()))?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&raw[..]), &mut text)?;
+    let o: Oracle = serde_json::from_str(&text)?;
+    let key = |m: &str, ns: Option<&str>, n: &str| match ns {
+        Some(ns) => format!("{m} => {ns}::{n}"),
+        None => format!("{m} => {n}"),
+    };
+    let mut categories = vec![];
+    for scheme in [
+        ra_demangle::Scheme::Gnu,
+        ra_demangle::Scheme::Rust,
+        ra_demangle::Scheme::Msvc,
+    ] {
+        let class = scheme.ghidra_class();
+        let mut g = std::collections::BTreeSet::new();
+        let mut r = std::collections::BTreeSet::new();
+        for e in &o.results {
+            if let Some(x) = e.demanglers.iter().find(|x| x.demangler == class) {
+                g.insert(key(&e.mangled, x.namespace.as_deref(), &x.name));
+            }
+            if let Some(d) = ra_demangle::demangle_with(scheme, &e.mangled) {
+                r.insert(key(&e.mangled, d.namespace_string().as_deref(), &d.name));
+            }
+        }
+        categories.push(ra_compare::CategoryResult::from_sets(class, &g, &r));
+    }
+    Ok(Comparison {
+        binary: DEMANGLE_ORACLE.into(),
+        ghidra_producer: o.producer,
+        ra_producer: format!("ra {}", env!("CARGO_PKG_VERSION")),
+        language: "-".into(),
+        bias: 0,
+        categories,
+    })
+}
+
 pub struct RegressConfig {
     pub corpus: PathBuf,
     pub expected: PathBuf,
@@ -80,6 +143,15 @@ pub fn regress(cfg: &RegressConfig) -> Result<RegressOutcome> {
             )?;
         }
         results.push(ra_compare::compare(&name, &ghidra, &ours));
+    }
+    let oracle = cfg.expected.join("demangle/ghidra.json.gz");
+    if oracle.exists()
+        && cfg
+            .filter
+            .as_ref()
+            .is_none_or(|f| DEMANGLE_ORACLE.contains(f.as_str()))
+    {
+        results.push(demangle_comparison(&oracle)?);
     }
     let mut thresholds = Thresholds::load(&cfg.thresholds)?;
     if cfg.update_thresholds {

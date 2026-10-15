@@ -11,4 +11,5 @@ ra-loader.workspace = true
 ra-sleigh.workspace = true
 pcode.workspace = true
 quick-xml.workspace = true
+ra-demangle.workspace = true
 anyhow.workspace = true

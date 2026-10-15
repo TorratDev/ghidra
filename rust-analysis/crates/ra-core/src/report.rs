@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex;
 
-pub const SCHEMA_VERSION: u32 = 1;
+/// 2: `namespace` on symbols, functions and imports.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnalysisReport {
@@ -82,6 +83,9 @@ pub struct SymbolInfo {
     #[serde(with = "hex")]
     pub addr: u64,
     pub name: String,
+    /// Parent namespace path (`std::vector<int>`), `None` for global.
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// `function`, `label`, `data`.
     pub kind: String,
     pub source: SymbolSource,
@@ -90,6 +94,8 @@ pub struct SymbolInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportInfo {
     pub name: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
     #[serde(default)]
     pub library: Option<String>,
     /// Address of the thunk/stub or pointer slot that refers to the import.
@@ -109,6 +115,8 @@ pub struct FunctionInfo {
     #[serde(with = "hex")]
     pub entry: u64,
     pub name: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub source: SymbolSource,
     #[serde(default)]
     pub thunk: bool,
@@ -223,6 +231,7 @@ mod tests {
         let f = FunctionInfo {
             entry: 0xffff_ffff_8000_0000,
             name: "f".into(),
+            namespace: None,
             source: SymbolSource::Imported,
             thunk: false,
             thunk_target: Some(0x10),

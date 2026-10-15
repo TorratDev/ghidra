@@ -14,6 +14,7 @@ A Rust port of Ghidra's auto-analysis, as a single `ra` binary with JSON output.
 | `ra-loader` | `ElfLoader`, `PeLoader`, `MachoLoader`, `BinaryLoader`, ELF/PE/Mach-O format markup, `.eh_frame` seeds |
 | `ra-sleigh` | `SleighLanguage`, flow types, operand references, via Icicle |
 | `ra-analysis` | entry points, PLT thunks, recursive descent, subroutine references, no-return (known and discovered), byte-pattern function starts, thunks, shared returns, jump tables, block-local constant propagation, `BasicBlockModel` |
+| `ra-demangle` | `GnuDemangler` + `GnuDemanglerParser`, `RustDemangler`, `MicrosoftDemangler`, with Ghidra's naming rules (leaf name + namespace) |
 | `ra-compare` | differential comparison, thresholds, report rendering |
 | `ra-cli` | `ra analyze`, `ra compare`, `ra regress` |
 
@@ -43,16 +44,17 @@ GHIDRA_INSTALL_DIR=/path/to/ghidra_12.1.4_PUBLIC compare/run.sh
 - `compare/corpus/src/`: corpus sources. `compare/corpus/build_corpus.sh` builds them, and the built binaries are committed so results never drift with the toolchain.
 - `compare/ghidra/ExportAnalysis.java`: the GhidraScript that exports Ghidra's results in `ra`'s JSON schema.
 - `compare/ghidra_export.sh`: runs Ghidra headless over the corpus and writes `compare/expected/*.json.gz`.
+- `compare/ghidra/DemangleNames.java` and `compare/ghidra_demangle.sh`: the demangle oracle. Every Ghidra demangler runs over `compare/demangle/names.txt`, which holds every mangled symbol in the corpus plus every input extracted from Ghidra's Java demangler tests by `tools/extract_demangler_vectors.py`. `ra regress` reports agreement as the `demangle-oracle` pseudo-binary, with one category per Ghidra demangler class.
 - `compare/thresholds.toml`: minimum recall and precision per binary and category.
 - `ra regress --report-dir DIR`: writes `report.md` with per-category metrics and concrete mismatch samples (Ghidra-only and ra-only keys).
 
 CI (`.github/workflows/rust-analysis.yml`) runs the offline gate, and also a live job that downloads the pinned Ghidra release (SHA-256 verified).
 
-## Known gaps (milestone 1)
+## Known gaps
 
 These are measured by the differential report and listed in `PARITY.md`:
 
-- **Demangling (M2):** C++ function and import names differ, because Ghidra shows demangled names.
+- **MSVC demangling:** 53% agreement on MDMang's own torture vectors (the corpus DLLs match 100%). The `msvc-demangler` crate can't parse many exotic forms, and full parity needs an MDMang port.
 - **Function-wide constant propagation (M3):** propagation is block-local here, so references through registers set in other blocks are missed.
 - **Jump tables:** recovery covers the x86 absolute and relative idioms. AArch64 and other architectures come in M3.
 - **Static glibc internals:** IFUNC resolvers and libc-internal thunks and no-return functions differ.

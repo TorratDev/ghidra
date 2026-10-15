@@ -124,6 +124,24 @@ impl MemoryMap {
         Some(v)
     }
 
+    /// Grows the block starting at `start` to `size` bytes backed by `data`
+    /// (never past the next block).
+    pub fn grow(&mut self, start: u64, size: u64, data: &[u8]) {
+        let next = self
+            .blocks
+            .iter()
+            .map(|b| b.start)
+            .filter(|s| *s > start)
+            .min();
+        if let Some(b) = self.blocks.iter_mut().find(|b| b.start == start) {
+            let size = next.map_or(size, |n| size.min(n - start));
+            if size > b.size {
+                b.size = size;
+                b.data = data[..(size as usize).min(data.len())].to_vec();
+            }
+        }
+    }
+
     /// Removes write permission from blocks entirely inside `[start, end)`.
     pub fn clear_write(&mut self, start: u64, end: u64) {
         for b in &mut self.blocks {

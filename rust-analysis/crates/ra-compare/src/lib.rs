@@ -27,7 +27,7 @@ pub struct CategoryResult {
 }
 
 impl CategoryResult {
-    fn from_sets(name: &str, ghidra: &BTreeSet<String>, ra: &BTreeSet<String>) -> Self {
+    pub fn from_sets(name: &str, ghidra: &BTreeSet<String>, ra: &BTreeSet<String>) -> Self {
         let matched = ghidra.intersection(ra).count();
         let g_only: Vec<_> = ghidra.difference(ra).cloned().collect();
         let r_only: Vec<_> = ra.difference(ghidra).cloned().collect();
@@ -79,6 +79,7 @@ pub const CATEGORIES: &[&str] = &[
     "exports",
     "functions",
     "function_names",
+    "demangled_names",
     "function_bodies",
     "thunks",
     "no_return",
@@ -152,7 +153,10 @@ impl<'a> View<'a> {
             "memory_blocks" => r
                 .memory
                 .iter()
-                .filter(|m| !m.name.starts_with("segment_") && m.name != "Headers")
+                // `tdb` is Ghidra's synthetic Windows thread data block.
+                .filter(|m| {
+                    !m.name.starts_with("segment_") && m.name != "Headers" && m.name != "tdb"
+                })
                 .map(|m| {
                     format!(
                         "{} {}-{} {}{}{}",
@@ -188,6 +192,24 @@ impl<'a> View<'a> {
                 .filter(|f| f.source != SymbolSource::Default)
                 .map(|f| format!("{} {}", hex(self.a(f.entry)), f.name))
                 .collect(),
+            // Names a demangler applied: analysis-source symbols at addresses
+            // that also carry a mangled imported symbol.
+            "demangled_names" => {
+                let mangled: HashSet<u64> = r
+                    .symbols
+                    .iter()
+                    .filter(|s| s.source == SymbolSource::Imported && is_mangled(&s.name))
+                    .map(|s| s.addr)
+                    .collect();
+                r.symbols
+                    .iter()
+                    .filter(|s| s.source == SymbolSource::Analysis && mangled.contains(&s.addr))
+                    .map(|s| match &s.namespace {
+                        Some(ns) => format!("{} {ns}::{}", hex(self.a(s.addr)), s.name),
+                        None => format!("{} {}", hex(self.a(s.addr)), s.name),
+                    })
+                    .collect()
+            }
             "function_bodies" => r
                 .functions
                 .iter()
@@ -276,6 +298,12 @@ impl<'a> View<'a> {
             _ => BTreeSet::new(),
         }
     }
+}
+
+fn is_mangled(name: &str) -> bool {
+    ["_Z", "__Z", "_R", "__R", "?"]
+        .iter()
+        .any(|p| name.starts_with(p))
 }
 
 fn strip_version(name: &str) -> &str {
@@ -472,6 +500,7 @@ pub fn markdown(results: &[Comparison], violations: &[Violation]) -> String {
     let shown = [
         "functions",
         "function_names",
+        "demangled_names",
         "thunks",
         "no_return",
         "instructions",
@@ -492,7 +521,10 @@ pub fn markdown(results: &[Comparison], violations: &[Violation]) -> String {
         s.push_str("---|");
     }
     s.push('\n');
-    for c in results {
+    let (programs, others): (Vec<&Comparison>, Vec<&Comparison>) = results
+        .iter()
+        .partition(|c| c.category("functions").is_some());
+    for c in programs {
         s.push_str(&format!("| {} |", c.binary));
         for name in shown {
             match c.category(name) {
@@ -503,6 +535,21 @@ pub fn markdown(results: &[Comparison], violations: &[Violation]) -> String {
         s.push('\n');
     }
     s.push('\n');
+    // Comparisons that are not whole programs (the demangle oracle) have
+    // their own categories.
+    for c in others {
+        s.push_str(&format!(
+            "**{}** (vs `{}`)\n\n| category | matched | ghidra-only | ra-only | recall / precision |\n|---|---|---|---|---|\n",
+            c.binary, c.ghidra_producer
+        ));
+        for r in &c.categories {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {:.3} / {:.3} |\n",
+                r.name, r.matched, r.ghidra_only, r.ra_only, r.recall, r.precision
+            ));
+        }
+        s.push('\n');
+    }
     if violations.is_empty() {
         s.push_str("**Gates: all passing.**\n\n");
     } else {
@@ -565,6 +612,7 @@ mod tests {
                 .map(|&f| FunctionInfo {
                     entry: base + f,
                     name: format!("f{f:x}"),
+                    namespace: None,
                     source: SymbolSource::Imported,
                     thunk: false,
                     thunk_target: None,

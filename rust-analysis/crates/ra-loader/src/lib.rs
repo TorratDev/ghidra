@@ -70,12 +70,18 @@ pub struct Program {
     /// Pointers the loader marks up as data (init/fini arrays), which Ghidra
     /// turns into references.
     pub marked_pointers: BTreeMap<u64, u64>,
+    /// Pointers whose code targets are disassembled but not made functions
+    /// (PE base relocations).
+    pub code_pointers: BTreeMap<u64, u64>,
     /// External entry points (Ghidra `SymbolTable.addExternalEntryPoint`);
     /// every symbol at one of these is an export.
     pub entry_points: std::collections::BTreeSet<u64>,
     /// Names the loader gives to functions that have no symbol (`entry`,
     /// `_INIT_0`, `_DT_INIT`, ...), as Ghidra's ElfProgramBuilder does.
     pub fallback_names: BTreeMap<u64, String>,
+    /// Tagged as a Rust program the way Ghidra's loaders do
+    /// (`RustUtilities.isRust` on `.rodata` / `.rdata` / `__const`).
+    pub is_rust: bool,
 }
 
 pub fn load_path(path: &std::path::Path, language_override: Option<&str>) -> Result<Program> {
@@ -142,8 +148,10 @@ fn load_raw(data: &[u8], path: &str, lang: &str) -> Program {
         import_slots: BTreeMap::new(),
         pointers: BTreeMap::new(),
         marked_pointers: BTreeMap::new(),
+        code_pointers: BTreeMap::new(),
         entry_points: Default::default(),
         fallback_names: BTreeMap::new(),
+        is_rust: false,
     }
 }
 
@@ -216,9 +224,12 @@ fn load_object(file: &object::File, data: &[u8], path: &str) -> Result<Program> 
         import_slots: BTreeMap::new(),
         pointers: BTreeMap::new(),
         marked_pointers: BTreeMap::new(),
+        code_pointers: BTreeMap::new(),
         entry_points: Default::default(),
         fallback_names: BTreeMap::new(),
+        is_rust: false,
     };
+    p.is_rust = detect_rust(file);
     if format == "PE" {
         // Ghidra's image base for PE is the optional header ImageBase.
         p.image_base = file.relative_address_base();
@@ -249,7 +260,7 @@ fn load_object(file: &object::File, data: &[u8], path: &str) -> Result<Program> 
     }
     let mem = &p.memory;
     p.seeds.retain(|a, _| mem.is_executable(*a));
-    if file.format() != BinaryFormat::Pe {
+    {
         let mut exports = vec![];
         for s in &p.symbols {
             if p.entry_points.contains(&s.addr) {
@@ -297,6 +308,56 @@ fn min_load_vaddr(file: &object::File) -> Option<u64> {
         .min()
 }
 
+/// HIGHLOW / DIR64 base relocations: (slot address, pointer value).
+fn pe_base_relocs(data: &[u8], base: u64, ptr: u32) -> Vec<(u64, u64)> {
+    let mut out = vec![];
+    let Ok(file) = object::File::parse(data) else {
+        return out;
+    };
+    let rel = match &file {
+        object::File::Pe32(f) => f
+            .data_directories()
+            .relocation_blocks(data, &f.section_table()),
+        object::File::Pe64(f) => f
+            .data_directories()
+            .relocation_blocks(data, &f.section_table()),
+        _ => return out,
+    };
+    let Ok(Some(mut blocks)) = rel else {
+        return out;
+    };
+    while let Ok(Some(block)) = blocks.next() {
+        for r in block {
+            if !matches!(
+                r.typ,
+                object::pe::IMAGE_REL_BASED_HIGHLOW | object::pe::IMAGE_REL_BASED_DIR64
+            ) {
+                continue;
+            }
+            let _ = ptr;
+            out.push((base + r.virtual_address as u64, 0));
+        }
+    }
+    out
+}
+
+/// `RustConstants.RUST_SIGNATURES` searched in the read-only data section
+/// the Ghidra loader checks for the format.
+fn detect_rust(file: &object::File) -> bool {
+    const SIGS: [&[u8]; 3] = [b"RUST_BACKTRACE", b"RUST_MIN_STACK", b"/rustc/"];
+    let section = match file.format() {
+        BinaryFormat::Elf => file.section_by_name(".rodata"),
+        BinaryFormat::Pe => file.section_by_name(".rdata"),
+        BinaryFormat::MachO => file.section_by_name("__const"),
+        _ => None,
+    };
+    let Some(data) = section.and_then(|s| s.data().ok()) else {
+        return false;
+    };
+    SIGS.iter()
+        .any(|sig| data.windows(sig.len()).any(|w| w == *sig))
+}
+
 fn build_memory(file: &object::File, bias: u64) -> MemoryMap {
     let mut m = MemoryMap::default();
     let mut any_section = false;
@@ -325,11 +386,12 @@ fn build_memory(file: &object::File, bias: u64) -> MemoryMap {
                 .unwrap_or_default()
         };
         let mut data = data;
-        data.truncate(s.size() as usize);
+        let size = s.size();
+        data.truncate(size as usize);
         m.add(MemoryBlock {
             name,
             start: s.address() + bias,
-            size: s.size(),
+            size,
             perms,
             data,
         });
@@ -481,6 +543,7 @@ fn elf_specific(file: &object::File, data: &[u8], p: &mut Program, bias: u64) {
     // Dynamic relocations: GOT/JUMP_SLOT slots name their imports, and
     // RELATIVE relocations are applied so pointer tables hold real targets.
     let mut copied = vec![];
+    let mut slot_syms: std::collections::HashSet<String> = Default::default();
     if let Some(relocs) = file.dynamic_relocations() {
         for (offset, r) in relocs {
             let offset = offset + bias;
@@ -500,6 +563,9 @@ fn elf_specific(file: &object::File, data: &[u8], p: &mut Program, bias: u64) {
                 continue;
             }
             if let Some(name) = sym_name {
+                if is_slot_reloc(file.architecture(), r.flags()) {
+                    slot_syms.insert(name.clone());
+                }
                 p.import_slots.entry(offset).or_insert(name.clone());
                 for imp in p
                     .imports
@@ -526,6 +592,15 @@ fn elf_specific(file: &object::File, data: &[u8], p: &mut Program, bias: u64) {
         }
     }
     p.imports.retain(|i| !copied.contains(&i.name));
+    // Data symbols referenced only by absolute data relocations (vtable /
+    // typeinfo pointers in .data.rel.ro) get no external location in Ghidra.
+    let data_syms: std::collections::HashSet<String> = file
+        .dynamic_symbols()
+        .filter(|s| s.is_undefined() && s.kind() == SymbolKind::Data)
+        .filter_map(|s| s.name().ok().map(str::to_string))
+        .collect();
+    p.imports
+        .retain(|i| !data_syms.contains(&i.name) || slot_syms.contains(&i.name));
     // .init_array / .fini_array / .preinit_array entries are function pointers
     // (ElfLoader marks them up and creates functions at their targets).
     for s in file.sections() {
@@ -583,6 +658,21 @@ fn elf_specific(file: &object::File, data: &[u8], p: &mut Program, bias: u64) {
         for (start, size) in info.relro {
             p.memory.clear_write(start + bias, start + bias + size);
         }
+    }
+}
+
+/// GOT / PLT slot relocations (GLOB_DAT, JUMP_SLOT).
+fn is_slot_reloc(arch: Architecture, flags: object::RelocationFlags) -> bool {
+    let object::RelocationFlags::Elf { r_type } = flags else {
+        return false;
+    };
+    use object::elf::*;
+    match arch {
+        Architecture::X86_64 => matches!(r_type, R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT),
+        Architecture::I386 => matches!(r_type, R_386_GLOB_DAT | R_386_JMP_SLOT),
+        Architecture::Aarch64 => matches!(r_type, R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT),
+        Architecture::Arm => matches!(r_type, R_ARM_GLOB_DAT | R_ARM_JUMP_SLOT),
+        _ => true,
     }
 }
 
@@ -672,6 +762,72 @@ fn pe_specific(data: &[u8], p: &mut Program) {
         return;
     };
     let base = pe.image_base as u64;
+    if let Some(opt) = pe.header.optional_header {
+        // PeLoader maps the headers as a "Headers" block.
+        let size = (opt.windows_fields.size_of_headers as usize).min(data.len());
+        p.memory.add(MemoryBlock {
+            name: "Headers".into(),
+            start: base,
+            size: size as u64,
+            perms: Perms {
+                read: true,
+                write: false,
+                execute: false,
+            },
+            data: data[..size].to_vec(),
+        });
+        // `entry` labels the entry point; a DLL without one (entry RVA 0)
+        // gets the label at the image base.
+        let entry = base + opt.standard_fields.address_of_entry_point;
+        p.symbols.push(LoadedSymbol {
+            addr: entry,
+            name: "entry".into(),
+            is_function: false,
+            is_data: entry == base,
+            source: SymbolSource::Imported,
+        });
+        p.entry_points.insert(entry);
+    }
+    // PeLoader sizes section blocks max(VirtualSize, SizeOfRawData), filled
+    // with the raw data (the tail past VirtualSize is file padding).
+    for sec in &pe.sections {
+        let raw = sec.size_of_raw_data as u64;
+        let start = base + sec.virtual_address as u64;
+        let off = sec.pointer_to_raw_data as usize;
+        if raw > sec.virtual_size as u64 {
+            if let Some(bytes) = data.get(off..off + raw as usize) {
+                p.memory.grow(start, raw, bytes);
+            }
+        }
+    }
+    // Base relocations mark pointer slots (vtables, function tables).
+    for (slot, _) in pe_base_relocs(data, base, p.pointer_size) {
+        if let Some(target) = p.memory.read_uint(slot, p.pointer_size as usize, false) {
+            if p.memory.is_mapped(target) {
+                p.code_pointers.insert(slot, target);
+            }
+        }
+    }
+    // Every exported address gets an `Ordinal_<n>` label besides its name.
+    if let Some(ed) = &pe.export_data {
+        let ord_base = ed.export_directory_table.ordinal_base as u64;
+        for (i, e) in ed.export_address_table.iter().enumerate() {
+            if let goblin::pe::export::ExportAddressTableEntry::ExportRVA(rva) = e {
+                if *rva == 0 {
+                    continue;
+                }
+                let addr = base + *rva as u64;
+                p.symbols.push(LoadedSymbol {
+                    addr,
+                    name: format!("Ordinal_{}", ord_base + i as u64),
+                    is_function: false,
+                    is_data: false,
+                    source: SymbolSource::Imported,
+                });
+                p.entry_points.insert(addr);
+            }
+        }
+    }
     for imp in &pe.imports {
         let slot = base + imp.offset as u64;
         let name = imp.name.to_string();

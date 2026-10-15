@@ -47,10 +47,23 @@ fn ra_matches_ghidra_within_thresholds() {
 fn every_category_is_gated_for_every_binary() {
     let compare = root().join("compare");
     let t = ra_compare::Thresholds::load(&compare.join("thresholds.toml")).unwrap();
+    let demangle = t
+        .binaries
+        .get(ra_cli::DEMANGLE_ORACLE)
+        .expect("demangle-oracle has no thresholds");
+    for class in ["GnuDemangler", "RustDemangler", "MicrosoftDemangler"] {
+        assert!(
+            demangle.contains_key(class),
+            "demangle-oracle: {class} not gated"
+        );
+    }
     for e in std::fs::read_dir(compare.join("expected"))
         .unwrap()
         .flatten()
     {
+        if e.path().is_dir() {
+            continue;
+        }
         let name = e
             .file_name()
             .to_string_lossy()

@@ -25,8 +25,11 @@ if [ "$mode" != offline ]; then
     live="$here/work/live-expected"
     rm -rf "$live"; mkdir -p "$live"
     EXPECTED_DIR="$live" "$here/ghidra_export.sh"
+    EXPECTED_DIR="$live" "$here/ghidra_demangle.sh"
     if [ "$mode" = refresh ]; then
         cp "$live"/*.json.gz "$expected"/
+        mkdir -p "$expected/demangle"
+        cp "$live"/demangle/ghidra.json.gz "$expected"/demangle/
     else
         # The committed exports must equal what this Ghidra produces, so the
         # offline `cargo test` gate tests the same thing.
@@ -37,6 +40,10 @@ if [ "$mode" != offline ]; then
                 echo "DRIFT: $n differs from committed export (rerun with --refresh-expected)"; drift=1
             fi
         done
+        if ! python3 -I -c 'import gzip,json,sys; sys.exit(json.load(gzip.open(sys.argv[1])) != json.load(gzip.open(sys.argv[2])))' \
+                "$live/demangle/ghidra.json.gz" "$expected/demangle/ghidra.json.gz"; then
+            echo "DRIFT: demangle/ghidra.json.gz differs from committed oracle"; drift=1
+        fi
         if [ $drift != 0 ]; then
             echo "error: committed Ghidra exports are stale; rerun with --refresh-expected"
             exit 1

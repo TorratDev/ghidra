@@ -89,6 +89,11 @@ pub struct Constraints {
     pub after_defined: bool,
     /// `validcode="N"`: N instructions must decode by straight-line flow.
     pub valid_code: u32,
+    /// `validcode="function"`: only applies at an existing function (it
+    /// labels or marks functions, it never discovers them).
+    pub existing_function: bool,
+    /// `after="data"`: defined data (or no memory) must precede the match.
+    pub after_data: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -219,11 +224,19 @@ pub fn parse_pattern_file(xml: &str) -> Vec<Rule> {
             _ => None,
         };
         if let Some(a) = action {
-            if attr(e, "after").is_some_and(|v| v == "defined") {
-                rule.constraints.after_defined = true;
+            match attr(e, "after").as_deref() {
+                Some("defined") => rule.constraints.after_defined = true,
+                Some("data") => rule.constraints.after_data = true,
+                _ => {}
             }
-            if let Some(n) = attr(e, "validcode").and_then(|v| v.parse().ok()) {
-                rule.constraints.valid_code = n;
+            match attr(e, "validcode") {
+                Some(v) if v == "function" => rule.constraints.existing_function = true,
+                Some(v) => {
+                    if let Ok(n) = v.parse() {
+                        rule.constraints.valid_code = n;
+                    }
+                }
+                None => {}
             }
             rule.actions.push(a);
         }

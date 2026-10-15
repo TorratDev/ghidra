@@ -52,6 +52,41 @@ public class ExportAnalysis extends GhidraScript {
 		}
 	}
 
+	/**
+	 * Namespace path of a symbol below its library (externals) or the global
+	 * namespace, e.g. {@code std::vector<int>}; null when there is none.
+	 */
+	private static String namespaceOf(Symbol s) {
+		List<String> parts = new ArrayList<>();
+		Namespace ns = s.getParentNamespace();
+		while (ns != null && !ns.isGlobal() && !(ns instanceof Library)) {
+			parts.add(0, ns.getName());
+			ns = ns.getParentNamespace();
+		}
+		return parts.isEmpty() ? null : String.join("::", parts);
+	}
+
+	private static String libraryOf(Symbol s) {
+		Namespace ns = s.getParentNamespace();
+		while (ns != null && !ns.isGlobal()) {
+			if (ns instanceof Library) {
+				return ns.getName();
+			}
+			ns = ns.getParentNamespace();
+		}
+		return null;
+	}
+
+	private static void writeNamespace(JsonWriter w, Symbol s) throws Exception {
+		String ns = namespaceOf(s);
+		if (ns == null) {
+			w.name("namespace").nullValue();
+		}
+		else {
+			w.name("namespace").value(ns);
+		}
+	}
+
 	private boolean inMemory(Address a) {
 		return a != null && a.isMemoryAddress() && !a.isExternalAddress() &&
 			currentProgram.getMemory().contains(a) && !isArtificial(a);
@@ -71,7 +106,7 @@ public class ExportAnalysis extends GhidraScript {
 		try (Writer fw = new FileWriter(args[0]); JsonWriter w = new JsonWriter(fw)) {
 			w.setIndent(" ");
 			w.beginObject();
-			w.name("schema_version").value(1);
+			w.name("schema_version").value(2);
 			w.name("producer").value("ghidra " + Application.getApplicationVersion());
 			writeBinary(w);
 			writeMemory(w);
@@ -145,6 +180,7 @@ public class ExportAnalysis extends GhidraScript {
 			w.beginObject();
 			w.name("addr").value(hex(s.getAddress()));
 			w.name("name").value(s.getName());
+			writeNamespace(w, s);
 			w.name("kind").value(kind);
 			w.name("source").value(source(s.getSource()));
 			w.endObject();
@@ -153,45 +189,51 @@ public class ExportAnalysis extends GhidraScript {
 	}
 
 	private void writeImports(JsonWriter w) throws Exception {
+		// Every external symbol, including those a demangler moved into a
+		// child namespace of the library (getExternalLocations(lib) only
+		// walks the library's direct children).
 		w.name("imports").beginArray();
 		ExternalManager em = currentProgram.getExternalManager();
 		ReferenceManager rm = currentProgram.getReferenceManager();
 		Listing listing = currentProgram.getListing();
-		for (String lib : em.getExternalLibraryNames()) {
-			ExternalLocationIterator it = em.getExternalLocations(lib);
-			while (it.hasNext()) {
-				ExternalLocation loc = it.next();
-				Symbol sym = loc.getSymbol();
-				Address slot = null;
-				for (Reference r : rm.getReferencesTo(sym.getAddress())) {
-					Address from = r.getFromAddress();
-					if (inMemory(from) && listing.getInstructionAt(from) == null) {
-						slot = from;
-						break;
-					}
-				}
-				if (slot == null && loc.getFunction() != null) {
-					Address[] thunks = loc.getFunction().getFunctionThunkAddresses(false);
-					if (thunks != null && thunks.length > 0) {
-						slot = thunks[0];
-					}
-				}
-				w.beginObject();
-				w.name("name").value(loc.getLabel());
-				if (lib.equals(Library.UNKNOWN)) {
-					w.name("library").nullValue();
-				}
-				else {
-					w.name("library").value(lib);
-				}
-				if (slot == null) {
-					w.name("addr").nullValue();
-				}
-				else {
-					w.name("addr").value(hex(slot));
-				}
-				w.endObject();
+		SymbolIterator it = currentProgram.getSymbolTable().getExternalSymbols();
+		while (it.hasNext()) {
+			Symbol sym = it.next();
+			ExternalLocation loc = em.getExternalLocation(sym);
+			if (loc == null) {
+				continue;
 			}
+			Address slot = null;
+			for (Reference r : rm.getReferencesTo(sym.getAddress())) {
+				Address from = r.getFromAddress();
+				if (inMemory(from) && listing.getInstructionAt(from) == null) {
+					slot = from;
+					break;
+				}
+			}
+			if (slot == null && loc.getFunction() != null) {
+				Address[] thunks = loc.getFunction().getFunctionThunkAddresses(false);
+				if (thunks != null && thunks.length > 0) {
+					slot = thunks[0];
+				}
+			}
+			String lib = libraryOf(sym);
+			w.beginObject();
+			w.name("name").value(sym.getName());
+			writeNamespace(w, sym);
+			if (lib == null || lib.equals(Library.UNKNOWN)) {
+				w.name("library").nullValue();
+			}
+			else {
+				w.name("library").value(lib);
+			}
+			if (slot == null) {
+				w.name("addr").nullValue();
+			}
+			else {
+				w.name("addr").value(hex(slot));
+			}
+			w.endObject();
 		}
 		w.endArray();
 	}
@@ -224,6 +266,7 @@ public class ExportAnalysis extends GhidraScript {
 			w.beginObject();
 			w.name("entry").value(hex(f.getEntryPoint()));
 			w.name("name").value(f.getName());
+			writeNamespace(w, f.getSymbol());
 			w.name("source").value(source(f.getSymbol().getSource()));
 			w.name("thunk").value(f.isThunk());
 			Function thunked = f.isThunk() ? f.getThunkedFunction(false) : null;

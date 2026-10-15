@@ -9,9 +9,9 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 
 | status | classes |
 |---|---|
-| done | 7 |
-| partial | 24 |
-| planned | 230 |
+| done | 11 |
+| partial | 26 |
+| planned | 224 |
 | out-of-scope | 9 |
 
 ## Analyzers (132)
@@ -74,7 +74,7 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 | `FunctionStartPostAnalyzer` | Features/BytePatterns | ra-analysis::patterns | M1 | partial |  |
 | `FunctionStartPreFuncAnalyzer` | Features/BytePatterns | ra-analysis::patterns | M1 | partial |  |
 | `GccExceptionAnalyzer` | Features/Base | ra-loader::eh_frame (gimli) | M1 | partial | FDE starts only; LSDA/landing pads M2 |
-| `GnuDemanglerAnalyzer` | Features/GnuDemangler | cpp_demangle | M2 | planned | ported GnuDemanglerTest vectors |
+| `GnuDemanglerAnalyzer` | Features/GnuDemangler | ra-demangle::gnu (cpp_demangle + GnuDemanglerParser port) | M2 | done | 97% name agreement on Ghidra oracle; analyzer mode (all symbols) |
 | `GolangStringAnalyzer` | Features/Base | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `GolangSymbolAnalyzer` | Features/Base | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `HCS12ConventionAnalyzer` | Processors/HCS12 | ra-analysis (per-processor/format module) | M3 | planned |  |
@@ -91,7 +91,7 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 | `MachoAnalyzer` | Features/Base | ra-loader Mach-O | M1 | partial |  |
 | `MachoConstructorDestructorAnalyzer` | Features/FileFormats | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `MachoFunctionStartsAnalyzer` | Features/Base | ra-loader LC_FUNCTION_STARTS | M1 | done |  |
-| `MicrosoftDemanglerAnalyzer` | Features/MicrosoftDemangler | msvc-demangler / mdemangler port | M2 | planned | ~1700 MDMangBaseTest vectors |
+| `MicrosoftDemanglerAnalyzer` | Features/MicrosoftDemangler | ra-demangle::msvc (msvc-demangler + MDMang spelling) | M2 | partial | corpus 100%; 53% of MDMang torture vectors (crate parse gaps); MDMang port M4 |
 | `MingwRelocationAnalyzer` | Features/Base | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `MipsAddressAnalyzer` | Processors/MIPS | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `MipsPreAnalyzer` | Processors/MIPS | ra-analysis (per-processor/format module) | M3 | planned |  |
@@ -123,7 +123,7 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 | `PropagateExternalParametersAnalyzer` | Features/MicrosoftCodeAnalyzer | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `RISCVAddressAnalyzer` | Processors/RISCV | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `RttiAnalyzer` | Features/MicrosoftCodeAnalyzer | ra-analysis::rtti | M3 | planned |  |
-| `RustDemanglerAnalyzer` | Features/Rust | rustc-demangle | M2 | planned |  |
+| `RustDemanglerAnalyzer` | Features/Rust | ra-demangle::rust (legacy port + rustc-demangle v0) | M2 | done | 100% on oracle; Rust detection via RUST_SIGNATURES |
 | `RustStringAnalyzer` | Features/Rust | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `SH4AddressAnalyzer` | Processors/SuperH4 | ra-analysis (per-processor/format module) | M3 | planned |  |
 | `SH4EarlyAddressAnalyzer` | Processors/SuperH4 | ra-analysis (per-processor/format module) | M3 | planned |  |
@@ -260,10 +260,10 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 
 | Java class | module | Rust | milestone | status | notes |
 |---|---|---|---|---|---|
-| `GnuDemangler` | Features/GnuDemangler | see demangler analyzers | M2 | planned |  |
-| `MicrosoftDemangler` | Features/MicrosoftDemangler | see demangler analyzers | M2 | planned |  |
-| `RustDemangler` | Features/Rust | see demangler analyzers | M2 | planned |  |
-| `SwiftDemangler` | Features/Swift | see demangler analyzers | M2 | planned |  |
+| `GnuDemangler` | Features/GnuDemangler | ra-demangle::gnu | M2 | done |  |
+| `MicrosoftDemangler` | Features/MicrosoftDemangler | ra-demangle::msvc | M2 | partial |  |
+| `RustDemangler` | Features/Rust | ra-demangle::rust | M2 | done |  |
+| `SwiftDemangler` | Features/Swift | swift demangler port | M4 | planned | no Swift toolchain for the corpus |
 
 ## File systems (49)
 
@@ -351,19 +351,19 @@ Verification for every `done`/`partial` row is the Ghidra-vs-ra differential reg
 | `Features/FunctionID` | ra-fid | M4 | planned |
 | `Features/GhidraGo` | - | - | out-of-scope |
 | `Features/GhidraServer` | - | - | out-of-scope |
-| `Features/GnuDemangler` | cpp_demangle | M2 | planned |
+| `Features/GnuDemangler` | ra-demangle::gnu | M2 | done |
 | `Features/GraphFunctionCalls` | - | - | out-of-scope |
 | `Features/GraphServices` | - | - | out-of-scope |
 | `Features/MicrosoftCodeAnalyzer` | ra-analysis::{rtti,seh} | M3 | planned |
-| `Features/MicrosoftDemangler` | msvc-demangler | M2 | planned |
-| `Features/MicrosoftDmang` | mdemangler port | M2 | planned |
+| `Features/MicrosoftDemangler` | ra-demangle::msvc | M2 | partial |
+| `Features/MicrosoftDmang` | msvc-demangler (MDMang port M4) | M2 | partial |
 | `Features/Objective-C` | ra-analysis::objc | M4 | planned |
 | `Features/PDB` | pdb crate | M2 | planned |
 | `Features/ProgramDiff` | ra-diff | M5 | planned |
 | `Features/ProgramGraph` | - | - | out-of-scope |
 | `Features/PyGhidra` | PyO3 bindings | M5 | planned |
 | `Features/Recognizers` | ra-fs magic recognizers | M4 | planned |
-| `Features/Rust` | rustc-demangle | M2 | planned |
+| `Features/Rust` | ra-demangle::rust | M2 | partial |
 | `Features/Sarif` | serde-sarif export | M2 | planned |
 | `Features/SourceCodeLookup` | - | - | out-of-scope |
 | `Features/Swift` | swift demangler | M4 | planned |

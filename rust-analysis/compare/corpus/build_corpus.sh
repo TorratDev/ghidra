@@ -33,6 +33,20 @@ build freestanding-aarch64-clang-O2 clang --target=aarch64-linux-gnu -O2 $FS -st
 build freestanding-aarch64-clang-O0 clang --target=aarch64-linux-gnu -O0 $FS -static $SRC/freestanding.c
 build freestanding-x86_64-clang-O2 clang --target=x86_64-linux-gnu -O2 $FS -static $SRC/freestanding.c
 build freestanding-x86_64-pe-clang-O2.exe clang --target=x86_64-pc-windows-msvc -O2 -ffreestanding -fno-builtin \
-    -nostdlib -fuse-ld=lld -Wl,/entry:_start -Wl,/subsystem:console $SRC/freestanding.c
+    -nostdlib -fuse-ld=lld -Wl,/entry:_start -Wl,/subsystem:console -Wl,/Brepro $SRC/freestanding.c
 build freestanding-i386-pe-clang-O2.exe clang --target=i686-pc-windows-msvc -O2 -ffreestanding -fno-builtin \
-    -nostdlib -fuse-ld=lld -Wl,/entry:_start -Wl,/subsystem:console $SRC/freestanding.c
+    -nostdlib -fuse-ld=lld -Wl,/entry:_start -Wl,/subsystem:console -Wl,/Brepro $SRC/freestanding.c
+
+# Rust (no_std, no libc). rustc defaults to v0 mangling; legacy mangling is
+# behind -Z, enabled on stable via RUSTC_BOOTSTRAP for this corpus build only.
+RF="-C panic=abort -C opt-level=1 -C relocation-model=static -C link-arg=-nostartfiles -C link-arg=-nostdlib -C link-arg=-static --edition 2021"
+build rust-x86_64-v0 rustc $RF -C symbol-mangling-version=v0 $SRC/rustlib.rs
+build rust-x86_64-legacy env RUSTC_BOOTSTRAP=1 rustc $RF -Z unstable-options -C symbol-mangling-version=legacy $SRC/rustlib.rs
+
+# MSVC-ABI C++ DLLs (no CRT) with MSVC-mangled exports.
+MF="-O1 -shared -nostdlib -fno-exceptions -fno-rtti -fuse-ld=lld -Wl,/noentry -Wl,/Brepro"
+build cxx-msvc-x86_64.dll clang --target=x86_64-pc-windows-msvc $MF $SRC/msvc.cpp
+build cxx-msvc-i386.dll clang --target=i686-pc-windows-msvc $MF $SRC/msvc.cpp
+
+# Import libraries are a side effect of the DLL links.
+rm -f "$OUT"/*.lib
