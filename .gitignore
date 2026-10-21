@@ -90,3 +90,5 @@ core.*
 __pycache__
 
 gradle.lockfile
+# Native tool build output (scripts/build-native.sh)
+/build/native/
