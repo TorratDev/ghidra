@@ -85,6 +85,19 @@ For more detailed information on building Ghidra, please read the [Developer's G
 
 For issues building, please check the [Known Issues][known-issues] section for possible solutions.
 
+### Native tools only (no JVM)
+`scripts/build-native.sh` builds the standalone `decompile` and `sleigh_opt` executables and compiles `ARM8_le.slaspec` to `ARM8_le.sla`, writing them to `build/native/` and printing their paths and sha256 checksums.
+
+Prerequisites (tested with g++ 13.3, GNU Make 4.3, Bison 3.8.2, flex 2.6.4, m4 1.4.19 on Ubuntu 24.04 x86_64):
+* a C++11 compiler (`g++`)
+* `make`
+* `bison`, `flex` (provides `lex`) and `m4`
+* zlib development files (`-lz`)
+
+```
+./scripts/build-native.sh
+```
+
 ## Develop
 
 ### User Scripts and Extensions
