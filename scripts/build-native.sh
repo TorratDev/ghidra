@@ -3,7 +3,7 @@
 # Outputs: decompile, sleigh_opt, ARM8_le.sla. Builds in a copy so tracked
 # generated files (xml.cc, grammar.cc, ...) are never rewritten in the clone.
 # shortcut: pins current toolchain only, upgrade to a container image later
-# Pinned (tested): g++ 13.3, GNU Make 4.3, Bison 3.8.2, m4 1.4.19 on Ubuntu 24.04 x86_64.
+# Pinned (tested): g++ 13.3, GNU Make 4.3, Bison 3.8.2, flex 2.6.4, m4 1.4.19 on Ubuntu 24.04 x86_64.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -12,7 +12,7 @@ lang=$root/Ghidra/Processors/ARM/data/languages
 out=$root/build/native
 work=$out/work
 
-for tool in g++ make bison m4; do
+for tool in g++ make bison flex m4; do
   command -v "$tool" >/dev/null || { echo "missing prerequisite: $tool" >&2; exit 1; }
 done
 
