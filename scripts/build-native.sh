@@ -3,7 +3,7 @@
 # Outputs: decompile, sleigh_opt, ARM8_le.sla. Builds in a copy so tracked
 # generated files (xml.cc, grammar.cc, ...) are never rewritten in the clone.
 # shortcut: checks tools exist but not their versions (tested only with the toolchain below), switch to a pinned container image when CI or a second distro needs it
-# Pinned (tested): g++ 13.3, GNU Make 4.3, Bison 3.8.2, flex 2.6.4, m4 1.4.19 on Ubuntu 24.04 x86_64.
+# Tested with: g++ 13.3, GNU Make 4.3, Bison 3.8.2, flex 2.6.4, m4 1.4.19 on Ubuntu 24.04 x86_64.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
