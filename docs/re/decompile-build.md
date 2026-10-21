@@ -30,7 +30,6 @@ sha256 (`ghidra_opt` == `decompile`):
 ## Empty-stdin check
 `./decompile < /dev/null; echo $?` prints nothing and exits **1**, not 0.
 This is by design, not a failure: `ArchitectureGhidra::readToAnyBurst`
-(`ghidra_arch.cc`, lines 96/124/153) calls `exit(1)` on EOF "to avoid a runaway
-process". Confirmed with gdb (breakpoint on `exit`, called from `readToAnyBurst`
+(`ghidra_arch.cc:96`) calls `exit(1)` on EOF "to avoid a runaway process". Confirmed with gdb (breakpoint on `exit`, called from `readToAnyBurst`
 <- `GhidraCapability::readCommand` <- `main`); no signal, no stderr output.
 The binary starts, reads stdin, and terminates without crashing.
