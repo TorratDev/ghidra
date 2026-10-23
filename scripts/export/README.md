@@ -10,8 +10,8 @@ open program to two files in the output directory:
 - `export.bin`: the bytes of every initialized memory block, concatenated in address order. Each
   block in the JSON gives its `sidecar_offset`/`sidecar_length`; the JSON names the file and its sha256.
 
-Addresses are `space:hexoffset` strings (`ram:02000d6c`). `universal_id` is null for built-in data
-types (Ghidra generates a new ID for them every session). `function_count` is the function
+Addresses are `space:hexoffset` strings (`ram:02000d6c`). There is no universal ID: Ghidra generates a new one per
+session for types it creates on the fly, so exporting it would make runs differ. `function_count` is the function
 manager's count and includes external functions; the `functions` array holds the non-external
 ones (`getFunctions(true)`).
 

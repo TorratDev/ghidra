@@ -18,7 +18,6 @@ import ghidra.program.model.data.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.*;
-import ghidra.util.UniversalID;
 
 public class ExportProject extends GhidraScript {
 	private static final int CHUNK = 1 << 20;
@@ -223,15 +222,11 @@ public class ExportProject extends GhidraScript {
 		for (DataType dt : types.values()) {
 			out.print(sep);
 			sep = ",\n";
-			// Built-in types get a new random universal ID every session, so exporting it would make
-			// two runs differ. Only types stored in the project keep a stable ID.
-			SourceArchive sa = dt.getSourceArchive();
-			boolean builtIn = sa != null && sa.getArchiveType() == ArchiveType.BUILT_IN;
-			UniversalID id = builtIn ? null : dt.getUniversalID();
+			// No universal ID: Ghidra generates a new one per session for types it creates on the fly
+			// (e.g. "undefined"), which would make two exports differ.
 			out.print("{\"name\": " + q(dt.getName()) + ", \"path_name\": " + q(dt.getPathName()) +
 				", \"category_path\": " + q(dt.getCategoryPath().getPath()) + ", \"length\": " + dt.getLength() +
 				", \"alignment\": " + dt.getAlignment() + ", \"description\": " + q(dt.getDescription()) +
-				", \"universal_id\": " + (id == null ? "null" : q(Long.toHexString(id.getValue()))) +
 				", \"kind\": " + q(kind(dt)));
 			if (dt instanceof TypeDef) {
 				out.print(", \"base\": " + q(((TypeDef) dt).getBaseDataType().getPathName()));
