@@ -45,7 +45,11 @@ type Process struct {
 func Start(path string, h Handler) (*Process, error) { return StartCmd(exec.Command(path), h) }
 
 // StartCmd is Start for a caller-configured command. It must not have Stdin, Stdout or Stderr set.
-func StartCmd(cmd *exec.Cmd, h Handler) (*Process, error) {
+func StartCmd(cmd *exec.Cmd, h Handler) (*Process, error) { return StartCmdTrace(cmd, h, nil, nil) }
+
+// StartCmdTrace is StartCmd that also copies every byte sent to the process to tx and every
+// byte read from it to rx (either may be nil). It is for recording and replay tests.
+func StartCmdTrace(cmd *exec.Cmd, h Handler, tx, rx io.Writer) (*Process, error) {
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -57,7 +61,15 @@ func StartCmd(cmd *exec.Cmd, h Handler) (*Process, error) {
 		return nil, err
 	}
 	cmd.Stdout = outw
-	p := &Process{cmd: cmd, in: in, out: out, r: NewReader(out), w: NewWriter(in), h: h, stderr: &bytes.Buffer{}, done: make(chan struct{})}
+	var stdin io.Writer = in
+	var stdout io.Reader = out
+	if tx != nil {
+		stdin = io.MultiWriter(in, tx)
+	}
+	if rx != nil {
+		stdout = io.TeeReader(out, rx)
+	}
+	p := &Process{cmd: cmd, in: in, out: out, r: NewReader(stdout), w: NewWriter(stdin), h: h, stderr: &bytes.Buffer{}, done: make(chan struct{})}
 	cmd.Stderr = &limitedWriter{b: p.stderr, n: 4096}
 	err = cmd.Start()
 	outw.Close()
