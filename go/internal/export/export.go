@@ -168,7 +168,7 @@ type Sidecar struct {
 
 // Export is a parsed export.json.
 type Export struct {
-	FormatVersion int        `json:"format_version"`
+	FormatVersion int        `json:"-"` // set from "format_version"; 1 when the field is absent
 	Project       string     `json:"project"`
 	Program       string     `json:"program"`
 	GhidraVersion string     `json:"ghidra_version"`
@@ -207,9 +207,10 @@ func Load(path string) (*Export, error) {
 // Parse reads an export.json from r; dir is where the sidecar file lives.
 func Parse(r io.Reader, dir string) (*Export, error) {
 	var e Export
-	// Symbol addresses may be null; decode them raw to record whether one was present.
+	// Decode the version and symbol addresses raw: a pointer tells absent (nil) from an explicit 0 or null.
 	var raw struct {
-		Symbols []struct {
+		FormatVersion *int `json:"format_version"`
+		Symbols       []struct {
 			Address *string `json:"address"`
 		} `json:"symbols"`
 	}
@@ -223,11 +224,11 @@ func Parse(r io.Reader, dir string) (*Export, error) {
 	if err := json.Unmarshal(buf, &raw); err != nil {
 		return nil, fmt.Errorf("export: %w", err)
 	}
-	switch e.FormatVersion {
-	case 0:
-		e.FormatVersion = FormatVersion // field absent: the only layout ExportProject.java writes
-	case FormatVersion:
-	default:
+	e.FormatVersion = FormatVersion // field absent: the only layout ExportProject.java writes
+	if raw.FormatVersion != nil {
+		e.FormatVersion = *raw.FormatVersion
+	}
+	if e.FormatVersion != FormatVersion {
 		return nil, fmt.Errorf("export: unsupported format version %d (this reader supports %d)", e.FormatVersion, FormatVersion)
 	}
 	if e.Sidecar.File == "" || len(e.Sidecar.SHA256) != sha256.Size*2 {
