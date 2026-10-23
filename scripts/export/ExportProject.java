@@ -3,10 +3,13 @@
 // Usage: analyzeHeadless <projdir> <project> -process <program> -readOnly -noanalysis \
 //          -scriptPath scripts/export -postScript ExportProject.java <outdir>
 // Writes <outdir>/export.json and <outdir>/export.bin (default outdir: the current directory).
+// Further script args are hex addresses (ram space) at which tracked_context checks that a register's
+// value is constant over its whole range.
 // Compiled by Ghidra against its own jars; written for Ghidra 11.4.3.
 // @category Export
 
 import java.io.*;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -14,13 +17,19 @@ import java.util.*;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.Application;
 import ghidra.program.model.address.*;
+import ghidra.program.model.lang.PrototypeModel;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.lang.RegisterValue;
 import ghidra.program.model.data.*;
 import ghidra.program.model.listing.*;
+import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.*;
 
 public class ExportProject extends GhidraScript {
+	private static final int FORMAT_VERSION = 1; // layout of export.json; the Go reader rejects other values
 	private static final int CHUNK = 1 << 20;
+	private static final long CHECK_LIMIT = 4_000_000; // addresses walked per tracked_context range check
 
 	private PrintWriter out;
 	private final Map<String, DataType> types = new TreeMap<>(); // keyed by path name, so output is sorted
@@ -50,6 +59,21 @@ public class ExportProject extends GhidraScript {
 			writeSymbols();
 			out.print(",\n\"functions\": ");
 			writeFunctions();
+			// Every section that calls typeRef() must come before data_types.
+			out.print(",\n\"instructions\": ");
+			writeInstructions();
+			out.print(",\n\"context\": ");
+			writeContext();
+			out.print(",\n\"registers\": ");
+			writeRegisters();
+			out.print(",\n\"userops\": ");
+			writeUserOps();
+			out.print(",\n\"tracked_context\": ");
+			writeTrackedContext(args);
+			out.print(",\n\"comments\": ");
+			writeComments();
+			out.print(",\n\"defined_data\": ");
+			writeDefinedData();
 			out.print(",\n\"data_types\": ");
 			writeTypes();
 			out.print("\n}\n");
@@ -88,7 +112,8 @@ public class ExportProject extends GhidraScript {
 	}
 
 	private void writeProgram(File bin, String sha) {
-		out.print("\"project\": " + q(state.getProject() == null ? null : state.getProject().getName()));
+		out.print("\"format_version\": " + FORMAT_VERSION);
+		out.print(",\n\"project\": " + q(state.getProject() == null ? null : state.getProject().getName()));
 		out.print(",\n\"program\": " + q(currentProgram.getName()));
 		out.print(",\n\"ghidra_version\": " + q(Application.getApplicationVersion()));
 		out.print(",\n\"language\": " + q(currentProgram.getLanguageID().getIdAsString()));
@@ -168,7 +193,7 @@ public class ExportProject extends GhidraScript {
 				out.print(rs + "{\"start\": " + addr(r.getMinAddress()) + ", \"end\": " + addr(r.getMaxAddress()) + "}");
 				rs = ", ";
 			}
-			out.print("], \"prototype\": " + q(f.getPrototypeString(true, true)) +
+			out.print("], \"prototype\": " + q(f.getPrototypeString(true, true)) + callingModelFields(f) +
 				", \"return_type\": " + typeRef(f.getReturnType()) + ", \"return_storage\": " + q(f.getReturn().getVariableStorage().toString()) +
 				", \"parameters\": [");
 			rs = "";
@@ -177,9 +202,275 @@ public class ExportProject extends GhidraScript {
 					", \"data_type\": " + typeRef(p.getDataType()) + ", \"storage\": " + q(p.getVariableStorage().toString()) + "}");
 				rs = ", ";
 			}
+			out.print("], \"local_variables\": [");
+			rs = "";
+			for (Variable v : f.getLocalVariables()) {
+				out.print(rs + "{\"name\": " + q(v.getName()) + ", \"data_type\": " + typeRef(v.getDataType()) +
+					", \"length\": " + v.getLength() + ", \"storage\": " + q(v.getVariableStorage().toString()) +
+					", \"stack_offset\": " + (v.isStackVariable() ? String.valueOf(v.getStackOffset()) : "null") +
+					", \"first_use_offset\": " + v.getFirstUseOffset() + "}");
+				rs = ", ";
+			}
 			out.print("]}");
 		}
 		out.print("\n]");
+	}
+
+	// Purge, stackshift and extrapop the way FunctionPrototype.grabFromFunction computes them: the
+	// function's own model, else the compiler spec default (the decompiler never sees a null model).
+	private String callingModelFields(Function f) {
+		int purge = f.getStackPurgeSize();
+		boolean purgeValid = purge != Function.INVALID_STACK_DEPTH_CHANGE && purge != Function.UNKNOWN_STACK_DEPTH_CHANGE;
+		PrototypeModel pm = f.getCallingConvention();
+		boolean explicit = pm != null;
+		if (pm == null) {
+			pm = currentProgram.getCompilerSpec().getDefaultCallingConvention();
+		}
+		String extrapop = pm == null ? "null" : String.valueOf(purgeValid ? purge + pm.getStackshift() : pm.getExtrapop());
+		return ", \"calling_convention_explicit\": " + explicit +
+			", \"stack_purge_size\": " + (purgeValid ? String.valueOf(purge) : "null") +
+			", \"stackshift\": " + (pm == null ? "null" : String.valueOf(pm.getStackshift())) +
+			", \"cc_extrapop\": " + (pm == null ? "null" : String.valueOf(pm.getExtrapop())) +
+			", \"extrapop\": " + extrapop;
+	}
+
+	// Listing instructions only. Code the decompiler disassembles on the fly (pseudoDisassemble) is not recorded.
+	private void writeInstructions() throws Exception {
+		out.print("[");
+		String sep = "\n";
+		InstructionIterator it = currentProgram.getListing().getInstructions(true);
+		while (it.hasNext()) {
+			monitor.checkCancelled();
+			Instruction ins = it.next();
+			out.print(sep);
+			sep = ",\n";
+			byte[] bytes = null;
+			try {
+				bytes = ins.getBytes();
+			}
+			catch (MemoryAccessException e) {
+				// leave null
+			}
+			out.print("{\"address\": " + addr(ins.getAddress()) + ", \"length\": " + ins.getLength() +
+				", \"parsed_length\": " + ins.getParsedLength() + ", \"length_overridden\": " + ins.isLengthOverridden() +
+				", \"mnemonic\": " + q(ins.getMnemonicString()) + ", \"bytes\": " + (bytes == null ? "null" : "\"" + hexs(bytes) + "\"") +
+				", \"flow_override\": " + q(ins.getFlowOverride().name()) +
+				", \"fallthrough\": " + addr(ins.getFallThrough()) + ", \"default_fallthrough\": " + addr(ins.getDefaultFallThrough()) +
+				", \"fallthrough_overridden\": " + ins.isFallThroughOverridden() +
+				", \"delay_slot_depth\": " + ins.getDelaySlotDepth() + ", \"in_delay_slot\": " + ins.isInDelaySlot() +
+				", \"references_from\": [");
+			Reference[] refs = ins.getReferencesFrom();
+			Arrays.sort(refs, Comparator.<Reference, Integer>comparing(r -> r.getOperandIndex())
+				.thenComparing((Reference r) -> r.getToAddress())
+				.thenComparing((Reference r) -> r.getReferenceType().getName())
+				.thenComparing((Reference r) -> r.isPrimary()));
+			String rs = "";
+			for (Reference r : refs) {
+				out.print(rs + "{\"from\": " + addr(r.getFromAddress()) + ", \"to\": " + addr(r.getToAddress()) +
+					", \"type\": " + q(r.getReferenceType().getName()) + ", \"primary\": " + r.isPrimary() +
+					", \"operand_index\": " + r.getOperandIndex() + ", \"source\": " + q(r.getSource().toString()) + "}");
+				rs = ", ";
+			}
+			out.print("]}");
+		}
+		out.print("\n]");
+	}
+
+	private void writeContext() throws Exception {
+		ProgramContext pc = currentProgram.getProgramContext();
+		List<Register> regs = new ArrayList<>(pc.getContextRegisters());
+		regs.sort(Comparator.comparing((Register r) -> r.getName()));
+		out.print("{\"registers\": [");
+		String sep = "";
+		for (Register r : regs) {
+			out.print(sep + "{\"name\": " + q(r.getName()) + ", \"bit_length\": " + r.getBitLength() + "}");
+			sep = ", ";
+		}
+		RegisterValue dv = pc.getDefaultDisassemblyContext();
+		out.print("], \"default_disassembly_context\": " + (dv == null ? "null" :
+			"{\"register\": " + q(dv.getRegister().getName()) + ", \"value\": " + q(big(dv.getUnsignedValueIgnoreMask())) +
+				", \"mask\": " + q(big(dv.getValueMask())) + "}"));
+		out.print(", \"ranges\": [");
+		sep = "\n";
+		for (Register r : regs) {
+			AddressRangeIterator it = pc.getRegisterValueAddressRanges(r);
+			while (it.hasNext()) {
+				monitor.checkCancelled();
+				AddressRange ar = it.next();
+				RegisterValue rv = pc.getRegisterValue(r, ar.getMinAddress());
+				out.print(sep + "{\"register\": " + q(r.getName()) + ", \"start\": " + addr(ar.getMinAddress()) +
+					", \"end\": " + addr(ar.getMaxAddress()) + ", \"value\": " +
+					(rv == null ? "null" : q(big(rv.getUnsignedValueIgnoreMask())) + ", \"mask\": " + q(big(rv.getValueMask()))) + "}");
+				sep = ",\n";
+			}
+		}
+		out.print("\n]}");
+	}
+
+	private void writeRegisters() {
+		List<Register> regs = new ArrayList<>(currentProgram.getLanguage().getRegisters());
+		regs.sort(Comparator.comparing((Register r) -> r.getName()));
+		out.print("[");
+		String sep = "\n";
+		for (Register r : regs) {
+			out.print(sep + regJson(r) + "}");
+			sep = ",\n";
+		}
+		out.print("\n]");
+	}
+
+	// Register fields without the closing brace, so callers can append.
+	private static String regJson(Register r) {
+		AddressSpace sp = r.getAddress().getAddressSpace();
+		return "{\"name\": " + q(r.getName()) + ", \"space\": " + q(sp.getName()) + ", \"space_id\": " + sp.getSpaceID() +
+			", \"offset\": " + r.getAddress().getOffset() + ", \"size\": " + r.getMinimumByteSize() +
+			", \"processor_context\": " + r.isProcessorContext();
+	}
+
+	private void writeUserOps() {
+		int n = currentProgram.getLanguage().getNumberOfUserDefinedOpNames();
+		out.print("[");
+		String sep = "\n";
+		for (int i = 0; i < n; i++) {
+			out.print(sep + "{\"index\": " + i + ", \"name\": " + q(currentProgram.getLanguage().getUserDefinedOpName(i)) + "}");
+			sep = ",\n";
+		}
+		out.print("\n]");
+	}
+
+	// Non-context registers with explicitly set values: the ranges of constant value. For each address given as a script
+	// arg, the range containing it is walked address by address (at most CHECK_LIMIT addresses; "complete"
+	// says whether that covered the range) to check the value never changes.
+	private void writeTrackedContext(String[] args) throws Exception {
+		ProgramContext pc = currentProgram.getProgramContext();
+		List<Register> regs = new ArrayList<>();
+		for (Register r : pc.getRegisters()) {
+			if (!r.isProcessorContext()) {
+				regs.add(r);
+			}
+		}
+		regs.sort(Comparator.comparing((Register r) -> r.getName()));
+		List<Address> probes = new ArrayList<>();
+		for (int i = 1; i < args.length; i++) {
+			probes.add(currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(Long.parseLong(args[i], 16)));
+		}
+		StringBuilder checks = new StringBuilder();
+		out.print("{\"registers\": [");
+		String sep = "\n";
+		for (Register r : regs) {
+			AddressRangeIterator it = pc.getRegisterValueAddressRanges(r);
+			if (!it.hasNext()) {
+				continue;
+			}
+			out.print(sep + regJson(r) + ", \"ranges\": [");
+			sep = ",\n";
+			String rs = "";
+			while (it.hasNext()) {
+				monitor.checkCancelled();
+				AddressRange ar = it.next();
+				BigInteger v = pc.getValue(r, ar.getMinAddress(), false);
+				out.print(rs + "{\"start\": " + addr(ar.getMinAddress()) + ", \"end\": " + addr(ar.getMaxAddress()) +
+					", \"value\": " + q(big(v)) + "}");
+				rs = ", ";
+				for (Address p : probes) {
+					if (!ar.contains(p)) {
+						continue;
+					}
+					long checked = 0;
+					boolean uniform = true;
+					for (Address a = ar.getMinAddress(); a != null && ar.contains(a) && checked < CHECK_LIMIT; a = a.next()) {
+						monitor.checkCancelled();
+						if (!Objects.equals(pc.getValue(r, a, false), v)) {
+							uniform = false;
+						}
+						checked++;
+					}
+					checks.append(checks.length() > 0 ? ", " : "").append("{\"address\": " + addr(p) + ", \"register\": " + q(r.getName()) +
+						", \"range_start\": " + addr(ar.getMinAddress()) + ", \"range_end\": " + addr(ar.getMaxAddress()) +
+						", \"addresses_checked\": " + checked + ", \"complete\": " + (ar.getLength() <= CHECK_LIMIT) +
+						", \"uniform\": " + uniform + "}");
+					println("tracked_context: " + r.getName() + " over " + ar + " containing " + p + " uniform=" + uniform);
+				}
+			}
+			out.print("]}");
+		}
+		out.print("\n], \"uniform_check\": [" + checks + "], \"entries\": [");
+		// What DecompileCallback.encodeTrackedPointSet asks: every non-context register's value at one
+		// address, including the language default (which getRegisterValueAddressRanges does not report).
+		// Asked here at each function entry; registers with no value are left out, as there.
+		sep = "\n";
+		FunctionIterator fit = currentProgram.getFunctionManager().getFunctions(true);
+		while (fit.hasNext()) {
+			monitor.checkCancelled();
+			Address entry = fit.next().getEntryPoint();
+			out.print(sep + "{\"entry\": " + addr(entry) + ", \"values\": [");
+			sep = ",\n";
+			String vs = "";
+			for (Register r : regs) {
+				BigInteger v = pc.getValue(r, entry, false);
+				if (v != null) {
+					out.print(vs + regJson(r) + ", \"value\": " + q(big(v)) + "}");
+					vs = ", ";
+				}
+			}
+			out.print("]}");
+		}
+		out.print("\n]}");
+	}
+
+	private void writeComments() throws Exception {
+		Listing listing = currentProgram.getListing();
+		AddressSetView set = currentProgram.getMemory().getLoadedAndInitializedAddressSet();
+		List<Object[]> found = new ArrayList<>(); // {Address, CommentType, String}
+		for (CommentType ct : new CommentType[] { CommentType.EOL, CommentType.PRE, CommentType.POST, CommentType.PLATE,
+			CommentType.REPEATABLE }) {
+			AddressIterator it = listing.getCommentAddressIterator(ct, set, true);
+			while (it.hasNext()) {
+				monitor.checkCancelled();
+				Address a = it.next();
+				String text = listing.getComment(ct, a);
+				if (text != null) {
+					found.add(new Object[] { a, ct, text });
+				}
+			}
+		}
+		found.sort(Comparator.<Object[], Address>comparing(o -> (Address) o[0]).thenComparingInt(o -> ((CommentType) o[1]).ordinal()));
+		out.print("[");
+		String sep = "\n";
+		for (Object[] o : found) {
+			out.print(sep + "{\"address\": " + addr((Address) o[0]) + ", \"type\": " + q(((CommentType) o[1]).name()) +
+				", \"text\": " + q((String) o[2]) + "}");
+			sep = ",\n";
+		}
+		out.print("\n]");
+	}
+
+	// Component coverage of structures/arrays at these addresses is not checked.
+	private void writeDefinedData() throws Exception {
+		out.print("[");
+		String sep = "\n";
+		DataIterator it = currentProgram.getListing().getDefinedData(true);
+		while (it.hasNext()) {
+			monitor.checkCancelled();
+			Data d = it.next();
+			out.print(sep + "{\"address\": " + addr(d.getAddress()) + ", \"data_type\": " + typeRef(d.getDataType()) +
+				", \"length\": " + d.getLength() + "}");
+			sep = ",\n";
+		}
+		out.print("\n]");
+	}
+
+	private static String big(BigInteger v) {
+		return v == null ? null : v.toString();
+	}
+
+	private static String hexs(byte[] b) {
+		char[] c = new char[b.length * 2];
+		for (int i = 0; i < b.length; i++) {
+			c[2 * i] = "0123456789abcdef".charAt((b[i] >> 4) & 0xf);
+			c[2 * i + 1] = "0123456789abcdef".charAt(b[i] & 0xf);
+		}
+		return new String(c);
 	}
 
 	// A reference is the data type's path name; the definition goes into the data_types table.
