@@ -39,6 +39,10 @@ Further sections carry what the decompiler callbacks read (all keys are added; e
 
 All data types reached this way (function types, local variables, defined data) are in `data_types`.
 
+`format_version` (currently 1) is the first key of `export.json`. A reader must reject a value it does not
+know. Exports made before the field existed (including the ones with sha256 `d93b72f7…bb3d` and earlier) have no
+`format_version`; the Go reader treats an absent field as 1. Adding keys does not change the version.
+
 Addresses are `space:hexoffset` strings (`ram:02000d6c`). There is no universal ID: Ghidra generates a new one per
 session for types it creates on the fly, so exporting it would make runs differ. `function_count` is the function
 manager's count and includes external functions; the `functions` array holds the non-external

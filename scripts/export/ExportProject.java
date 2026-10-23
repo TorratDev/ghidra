@@ -27,6 +27,7 @@ import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.*;
 
 public class ExportProject extends GhidraScript {
+	private static final int FORMAT_VERSION = 1; // layout of export.json; the Go reader rejects other values
 	private static final int CHUNK = 1 << 20;
 	private static final long CHECK_LIMIT = 4_000_000; // addresses walked per tracked_context range check
 
@@ -111,7 +112,8 @@ public class ExportProject extends GhidraScript {
 	}
 
 	private void writeProgram(File bin, String sha) {
-		out.print("\"project\": " + q(state.getProject() == null ? null : state.getProject().getName()));
+		out.print("\"format_version\": " + FORMAT_VERSION);
+		out.print(",\n\"project\": " + q(state.getProject() == null ? null : state.getProject().getName()));
 		out.print(",\n\"program\": " + q(currentProgram.getName()));
 		out.print(",\n\"ghidra_version\": " + q(Application.getApplicationVersion()));
 		out.print(",\n\"language\": " + q(currentProgram.getLanguageID().getIdAsString()));
