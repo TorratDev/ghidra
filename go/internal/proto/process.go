@@ -74,7 +74,10 @@ func StartCmd(cmd *exec.Cmd, h Handler) (*Process, error) {
 }
 
 // Run sends one command and reads its response, answering queries through the handler.
-// Cancelling ctx kills the process. A dead or closed process returns an error.
+// Cancelling ctx kills the process, so ctx should carry a deadline. A dead or closed
+// process returns an error.
+//
+// shortcut: a live child that never answers blocks Run until ctx is done; callers must pass a ctx with a deadline, upgrade to a per-read timeout if needed
 func (p *Process) Run(ctx context.Context, name string, args ...[]byte) (*Result, error) {
 	stop := context.AfterFunc(ctx, func() { p.cmd.Process.Kill() })
 	defer stop()

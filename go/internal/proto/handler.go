@@ -20,8 +20,11 @@ type Reply struct {
 func String(data []byte) Reply { return Reply{ReplyString, data} }
 
 // HexBytes is the getbytes reply: each byte becomes two letters 'A'+nibble, high first
-// (DecompileProcess.getBytes).
+// (DecompileProcess.getBytes). Like Java, no bytes means no 0c/0d frame at all.
 func HexBytes(b []byte) Reply {
+	if len(b) == 0 {
+		return Reply{}
+	}
 	d := make([]byte, 0, 2*len(b))
 	for _, c := range b {
 		d = append(d, 'A'+c>>4, 'A'+c&0xf)

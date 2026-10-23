@@ -346,6 +346,7 @@ func TestQueryAnswerFraming(t *testing.T) {
 		{"none", func(*Element) (Reply, error) { return Reply{}, nil }, []byte{0, 0, 1, 8, 0, 0, 1, 9}},
 		{"bytes", func(*Element) (Reply, error) { return HexBytes([]byte{0x1f, 0xa0}), nil },
 			cat([]byte{0, 0, 1, 8}, frame(BytesStart, "BPKA"), []byte{0, 0, 1, 9})},
+		{"no bytes", func(*Element) (Reply, error) { return HexBytes(nil), nil }, []byte{0, 0, 1, 8, 0, 0, 1, 9}},
 		{"error", func(*Element) (Reply, error) { return Reply{}, errors.New("boom") },
 			cat([]byte{0, 0, 1, 0x0a}, frame(StringStart, "go.*errors.errorString"), frame(StringStart, "boom"), []byte{0, 0, 1, 0x0b})},
 	}
