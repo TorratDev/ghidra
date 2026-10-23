@@ -149,6 +149,8 @@ func TestRejects(t *testing.T) {
 	const sc = `"sidecar":{"file":"export.bin","sha256":"471fb943aa23c511f6f72f8d1652d9c880cfa392ad80503120547703e56a2be5"}`
 	cases := []struct{ name, json, want string }{
 		{"unknown version", `{"format_version":2,` + sc + `}`, "unsupported format version 2"},
+		{"explicit zero version", `{"format_version":0,` + sc + `}`, "unsupported format version 0"},
+		{"negative version", `{"format_version":-1,` + sc + `}`, "unsupported format version -1"},
 		{"no sidecar", `{}`, "sidecar"},
 		{"bad sidecar hash", `{"sidecar":{"file":"export.bin","sha256":"abc"}}`, "sidecar"},
 		{"sidecar path", `{"sidecar":{"file":"../x","sha256":"471fb943aa23c511f6f72f8d1652d9c880cfa392ad80503120547703e56a2be5"}}`, "plain file name"},
