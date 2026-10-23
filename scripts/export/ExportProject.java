@@ -336,7 +336,7 @@ public class ExportProject extends GhidraScript {
 		out.print("\n]");
 	}
 
-	// Non-context registers with values: the ranges of constant value. For each address given as a script
+	// Non-context registers with explicitly set values: the ranges of constant value. For each address given as a script
 	// arg, the range containing it is walked address by address (at most CHECK_LIMIT addresses; "complete"
 	// says whether that covered the range) to check the value never changes.
 	private void writeTrackedContext(String[] args) throws Exception {
@@ -392,7 +392,28 @@ public class ExportProject extends GhidraScript {
 			}
 			out.print("]}");
 		}
-		out.print("\n], \"uniform_check\": [" + checks + "]}");
+		out.print("\n], \"uniform_check\": [" + checks + "], \"entries\": [");
+		// What DecompileCallback.encodeTrackedPointSet asks: every non-context register's value at one
+		// address, including the language default (which getRegisterValueAddressRanges does not report).
+		// Asked here at each function entry; registers with no value are left out, as there.
+		sep = "\n";
+		FunctionIterator fit = currentProgram.getFunctionManager().getFunctions(true);
+		while (fit.hasNext()) {
+			monitor.checkCancelled();
+			Address entry = fit.next().getEntryPoint();
+			out.print(sep + "{\"entry\": " + addr(entry) + ", \"values\": [");
+			sep = ",\n";
+			String vs = "";
+			for (Register r : regs) {
+				BigInteger v = pc.getValue(r, entry, false);
+				if (v != null) {
+					out.print(vs + regJson(r) + ", \"value\": " + q(big(v)) + "}");
+					vs = ", ";
+				}
+			}
+			out.print("]}");
+		}
+		out.print("\n]}");
 	}
 
 	private void writeComments() throws Exception {

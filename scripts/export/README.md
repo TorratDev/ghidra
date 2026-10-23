@@ -21,16 +21,20 @@ Further sections carry what the decompiler callbacks read (all keys are added; e
   and the value ranges of each context register (register, start, end, value, mask). Values are decimal strings.
 - `registers`: every language register (name, space, space_id, offset, size, processor_context), sorted by name.
 - `userops`: index and name for every index below `getNumberOfUserDefinedOpNames()`.
-- `tracked_context`: for each non-context register that has values, its ranges (start, end, decimal value), plus
-  `uniform_check`: for each hex address passed as a further script arg, the range containing it is walked address
-  by address (at most 4,000,000) to confirm the value never changes (`uniform`, `addresses_checked`, `complete`).
+- `tracked_context`: `entries` holds, for each function entry, the value of every non-context register
+  (`getValue(reg, entry, false)`: register, space, space_id, offset, size, decimal value), which is what the
+  decompiler's gettrackedregisters callback asks; registers without a value are left out. This includes language
+  defaults. `registers` lists explicitly set value ranges only (usually none: `getRegisterValueAddressRanges` does not
+  report defaults), and `uniform_check` walks the range containing each hex address passed as a further script arg
+  (at most 4,000,000 addresses; `uniform`, `addresses_checked`, `complete`).
 - `comments`: EOL, PRE, POST, PLATE and REPEATABLE comments over the loaded, initialized memory
   (address, type name, text), sorted by address then type ordinal.
 - `defined_data`: defined data items (address, data_type, length). Component coverage of structures and arrays is
   not checked.
 - Functions also carry `calling_convention_explicit`, `stack_purge_size` (null when invalid or unknown), `stackshift`,
   `cc_extrapop`, `extrapop` and `local_variables` (name, data_type, length, storage, stack_offset, first_use_offset).
-  The model is the function's own, else the compiler spec's default, as `FunctionPrototype.grabFromFunction` does;
+  The model is the function's own, else the compiler spec's default (never null), as `FunctionPrototype.grabFromFunction`
+  does; this differs from a plain "null if no model" reading;
   `extrapop` is purge + stackshift when the purge is valid, else the model's extrapop.
 
 All data types reached this way (function types, local variables, defined data) are in `data_types`.
