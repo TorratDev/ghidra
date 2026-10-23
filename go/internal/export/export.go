@@ -210,7 +210,7 @@ func Parse(r io.Reader, dir string) (*Export, error) {
 	// Decode the version and symbol addresses raw: a pointer tells absent (nil) from an explicit 0 or null.
 	var raw struct {
 		FormatVersion *int `json:"format_version"`
-		Symbols []struct {
+		Symbols       []struct {
 			Address *string `json:"address"`
 		} `json:"symbols"`
 	}
